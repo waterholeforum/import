@@ -1,0 +1,30 @@
+{
+    "name": "waterhole/import",
+    "type": "waterhole-extension",
+    "description": "Import data from another platform into Waterhole",
+    "license": "MIT",
+    "require": {
+        "ext-dom": "*",
+        "s9e/text-formatter": "^2.11",
+        "waterhole/core": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "Waterhole\\Import\\": "src/"
+        }
+    },
+    "config": {
+        "preferred-install": "dist",
+        "sort-packages": true
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-main": "0.1.x-dev"
+        },
+        "laravel": {
+            "providers": [
+                "Waterhole\\Import\\ImportServiceProvider"
+            ]
+        }
+    }
+}
