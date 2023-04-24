@@ -25,7 +25,7 @@ trait ImportsFromDatabase
         ];
     }
 
-    public function handle()
+    public function handle(): void
     {
         if (Waterhole::hasPendingMigrations()) {
             $this->error(
@@ -55,9 +55,9 @@ trait ImportsFromDatabase
         return DB::connection($connectionName);
     }
 
-    abstract private function import(ConnectionInterface $connection);
+    abstract private function import(ConnectionInterface $connection): void;
 
-    protected function importFromDatabase(string $type, Builder $query, callable $callback)
+    protected function importFromDatabase(string $type, Builder $query, callable $callback): void
     {
         $count = $query->count();
 
@@ -66,12 +66,12 @@ trait ImportsFromDatabase
         $bar = $this->output->createProgressBar($count);
         $bar->start();
 
-        $query->chunk(1000, function ($rows) use ($bar, $callback) {
+        $query->chunk(1000, function ($rows) use ($type, $bar, $callback) {
             foreach ($rows as $row) {
                 try {
                     $callback($row);
                 } catch (Exception $e) {
-                    $prefix = !empty($row->id) ? "Error importing #$row->id: " : '';
+                    $prefix = !empty($row->id) ? "Error importing $type #$row->id: " : '';
                     $this->newLine();
                     $this->warn($prefix . $e->getMessage());
                 }

@@ -2,15 +2,20 @@
 
 namespace Waterhole\Import\Console;
 
+use DateTime;
 use DOMDocument;
 use Illuminate\Console\Command;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Facades\DB;
+use Waterhole\Formatter\FormatMentions;
 use Waterhole\Import\Console\Concerns\ImportsFromDatabase;
 use Waterhole\Models\Channel;
 use Waterhole\Models\Comment;
 use Waterhole\Models\Group;
+use Waterhole\Models\Model;
 use Waterhole\Models\Post;
+use Waterhole\Models\PostUser;
+use Waterhole\Models\ReactionSet;
 use Waterhole\Models\User;
 
 class ImportFlarum extends Command
@@ -27,18 +32,18 @@ class ImportFlarum extends Command
 
     protected $description = 'Import data from Flarum into Waterhole';
 
-    private function import(ConnectionInterface $connection)
+    private function import(ConnectionInterface $connection): void
     {
+        $this->seedReactions();
+
         $this->importUsers($connection);
         $this->importGroups($connection);
         $this->importTagsAsChannels($connection);
         $this->importDiscussionsAsPosts($connection);
         $this->importPostsAsComments($connection);
-
-        // TODO: import subscriptions, read state, mentions
     }
 
-    private function importUsers(ConnectionInterface $connection)
+    private function importUsers(ConnectionInterface $connection): void
     {
         $users = $connection->table('users')->orderBy('id');
 
@@ -55,15 +60,17 @@ class ImportFlarum extends Command
                 'locale' => $row->locale,
                 'bio' => $row->bio,
                 'avatar' => $row->avatar_url,
-                'created_at' => $row->joined_at,
-                'last_seen_at' => $row->last_seen_at,
-                'notifications_read_at' => $row->read_notifications_at,
-                // 'suspend_until' => $row->suspended_until, // TODO: can be invalid
+                'created_at' => new DateTime($row->joined_at),
+                'last_seen_at' => new DateTime($row->last_seen_at),
+                'notifications_read_at' => new DateTime($row->read_notifications_at),
+                'suspended_until' => $row->suspended_until
+                    ? min((new DateTime($row->suspended_until))->getTimestamp(), 2147483647)
+                    : null,
             ]);
         });
     }
 
-    private function importGroups(ConnectionInterface $connection)
+    private function importGroups(ConnectionInterface $connection): void
     {
         $groups = $connection->table('groups')->orderBy('id');
 
@@ -88,7 +95,7 @@ class ImportFlarum extends Command
         });
     }
 
-    private function importTagsAsChannels(ConnectionInterface $connection)
+    private function importTagsAsChannels(ConnectionInterface $connection): void
     {
         $tags = $connection
             ->table('tags')
@@ -97,16 +104,29 @@ class ImportFlarum extends Command
             ->orderBy('position');
 
         $this->importFromDatabase('channels', $tags, function ($row) {
-            Channel::create([
+            $channel = Channel::create([
                 'id' => $row->id,
                 'name' => $row->name,
                 'slug' => $row->slug,
                 'description' => $row->description,
             ]);
+
+            $channel->structure->update(['is_listed' => true]);
         });
     }
 
-    private function importDiscussionsAsPosts(ConnectionInterface $connection)
+    private function seedReactions(): void
+    {
+        ReactionSet::create([
+            'name' => 'Likes',
+            'is_default_posts' => true,
+            'is_default_comments' => true,
+        ])
+            ->reactionTypes()
+            ->create(['name' => 'Like', 'icon' => 'emoji:👍', 'score' => 1, 'position' => 0]);
+    }
+
+    private function importDiscussionsAsPosts(ConnectionInterface $connection): void
     {
         $channelIds = Channel::query()->pluck('id');
 
@@ -128,13 +148,12 @@ class ImportFlarum extends Command
                     ->from('post_likes')
                     ->whereColumn('post_id', 'first_post_id');
             }, 'liked_by')
-            ->whereNull('hidden_at')
-            ->where('is_private', false)
+            ->whereNull('discussions.hidden_at')
+            ->where('discussions.is_private', false)
             ->orderBy('discussions.id');
 
         $this->importFromDatabase('posts', $discussions, function ($row) use ($channelIds) {
-            $likedBy = array_filter(explode(',', $row->liked_by));
-
+            /** @var Post $post */
             $post = Post::withoutEvents(
                 fn() => Post::create([
                     'id' => $row->id,
@@ -143,27 +162,44 @@ class ImportFlarum extends Command
                     'title' => $row->title,
                     'slug' => $row->slug,
                     'parsed_body' => $this->reformat($row->content ?: ''),
-                    'created_at' => $row->created_at, // TODO: can fail (timezones?)
-                    'last_activity_at' => $row->last_posted_at,
-                    'comment_count' => $row->comment_count - 1,
-                    'score' => count($likedBy),
+                    'created_at' => $row->created_at,
+                    'last_activity_at' => $row->last_posted_at ?: $row->created_at,
+                    'comment_count' => max(0, $row->comment_count - 1),
                     'is_locked' => $row->is_locked,
                 ]),
             );
 
-            $post->likedBy()->sync($likedBy);
+            $this->createReactions($post, array_filter(explode(',', $row->liked_by)));
+            $this->createMentions($post);
+        });
+
+        $discussionUser = $connection
+            ->table('discussion_user')
+            ->select('*')
+            ->where('user_id', 1)
+            ->orderBy('discussion_id');
+
+        $this->importFromDatabase('discussion user records', $discussionUser, function ($row) {
+            PostUser::withoutEvents(
+                fn() => PostUser::create([
+                    'post_id' => $row->discussion_id,
+                    'user_id' => $row->user_id,
+                    'last_read_at' => new DateTime($row->last_read_at),
+                    'notifications' => $row->subscription,
+                ]),
+            );
         });
     }
 
-    private function importPostsAsComments(ConnectionInterface $connection)
+    private function importPostsAsComments(ConnectionInterface $connection): void
     {
         $posts = $connection
             ->table('posts')
             ->join('discussions', 'discussions.id', '=', 'discussion_id')
             ->where('posts.number', '!=', 1)
             ->where('type', 'comment')
-            ->whereNull('hidden_at')
-            ->where('is_private', false)
+            ->whereNull('posts.hidden_at')
+            ->where('posts.is_private', false)
             ->select('posts.*')
             ->selectSub(function ($query) {
                 $query
@@ -178,7 +214,8 @@ class ImportFlarum extends Command
                 $query
                     ->selectRaw('count(*)')
                     ->from('post_mentions_post')
-                    ->whereColumn('mentions_post_id', 'posts.id');
+                    ->whereColumn('mentions_post_id', 'posts.id')
+                    ->limit(1);
             }, 'reply_count')
             ->selectSub(function ($query) {
                 $query
@@ -189,8 +226,7 @@ class ImportFlarum extends Command
             ->orderBy('posts.id');
 
         $this->importFromDatabase('comments', $posts, function ($row) {
-            $likedBy = array_filter(explode(',', $row->liked_by));
-
+            /** @var Comment $comment */
             $comment = Comment::withoutEvents(
                 fn() => Comment::create([
                     'id' => $row->id,
@@ -198,14 +234,14 @@ class ImportFlarum extends Command
                     'parent_id' => $row->mentions_post_id,
                     'user_id' => $row->user_id,
                     'parsed_body' => $this->reformat($row->content ?: ''),
-                    'created_at' => $row->created_at,
-                    'edited_at' => $row->edited_at,
-                    'reply_count' => $row->reply_count,
-                    'score' => count($likedBy),
+                    'created_at' => new DateTime($row->created_at),
+                    'edited_at' => new DateTime($row->edited_at),
+                    'reply_count' => $row->reply_count ?: 0,
                 ]),
             );
 
-            $comment->likedBy()->sync($likedBy);
+            $this->createReactions($comment, array_filter(explode(',', $row->liked_by)));
+            $this->createMentions($comment);
         });
     }
 
@@ -219,7 +255,7 @@ class ImportFlarum extends Command
         $dom->loadXML($xml);
 
         // Convert user mentions into new format
-        // <USERMENTION id="1" username="Toby">@Toby</USERMENTION>
+        // Flarum format: <USERMENTION id="1" username="Toby">@Toby</USERMENTION>
         $elements = $dom->getElementsByTagName('USERMENTION');
         for ($i = $elements->length - 1; $i > -1; $i--) {
             $el = $elements->item($i);
@@ -230,7 +266,7 @@ class ImportFlarum extends Command
         }
 
         // Remove post mentions
-        // <POSTMENTION discussionid="1" displayname="Toby" id="123" number="1" username="Toby">@Toby#123</POSTMENTION>
+        // Flarum format: <POSTMENTION discussionid="1" displayname="Toby" id="123" number="1" username="Toby">@Toby#123</POSTMENTION>
         $elements = $dom->getElementsByTagName('POSTMENTION');
         for ($i = $elements->length - 1; $i > -1; $i--) {
             $el = $elements->item($i);
@@ -238,5 +274,22 @@ class ImportFlarum extends Command
         }
 
         return $dom->saveXML($dom->documentElement) ?: '';
+    }
+
+    private function createReactions(Model $model, array $userIds): void
+    {
+        $model->reactions()->delete();
+        $model
+            ->reactions()
+            ->createMany(
+                array_map(fn($userId) => ['reaction_type_id' => 1, 'user_id' => $userId], $userIds),
+            );
+
+        $model->recalculateScore()->save();
+    }
+
+    private function createMentions(Model $model): void
+    {
+        $model->mentions()->sync(FormatMentions::getMentionedUsers($model->parsed_body));
     }
 }
