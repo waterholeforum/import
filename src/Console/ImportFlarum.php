@@ -176,7 +176,6 @@ class ImportFlarum extends Command
         $discussionUser = $connection
             ->table('discussion_user')
             ->select('*')
-            ->where('user_id', 1)
             ->orderBy('discussion_id');
 
         $this->importFromDatabase('discussion user records', $discussionUser, function ($row) {
