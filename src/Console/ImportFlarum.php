@@ -57,7 +57,7 @@ class ImportFlarum extends Command
                 'name' => $row->username,
                 'email' => $row->email,
                 'email_verified_at' => $row->is_email_confirmed ? now() : null,
-                'locale' => $row->locale,
+                'locale' => $row->locale ?? null,
                 'bio' => $row->bio,
                 'avatar' => $row->avatar_url,
                 'created_at' => new DateTime($row->joined_at),
