@@ -57,11 +57,10 @@ class ImportFlarum extends Command
                 'name' => $row->username,
                 'email' => $row->email,
                 'email_verified_at' => $row->is_email_confirmed ? now() : null,
-                'bio' => $row->bio,
+                'bio' => $row->bio ?? null,
                 'avatar' => $row->avatar_url,
                 'created_at' => new DateTime($row->joined_at),
                 'last_seen_at' => new DateTime($row->last_seen_at),
-                'notifications_read_at' => new DateTime($row->read_notifications_at),
                 'suspended_until' => $row->suspended_until
                     ? min((new DateTime($row->suspended_until))->getTimestamp(), 2147483647)
                     : null,
