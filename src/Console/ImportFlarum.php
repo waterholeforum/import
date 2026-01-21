@@ -6,6 +6,7 @@ use DateTime;
 use DOMDocument;
 use Illuminate\Console\Command;
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\Eloquent\Model as Eloquent;
 use Illuminate\Support\Facades\DB;
 use Waterhole\Formatter\FormatMentions;
 use Waterhole\Import\Console\Concerns\ImportsFromDatabase;
@@ -34,6 +35,7 @@ class ImportFlarum extends Command
 
     private function import(ConnectionInterface $connection): void
     {
+        Eloquent::unguard();
         $this->seedReactions();
 
         $this->importUsers($connection);
@@ -41,6 +43,9 @@ class ImportFlarum extends Command
         $this->importTagsAsChannels($connection);
         $this->importDiscussionsAsPosts($connection);
         $this->importPostsAsComments($connection);
+
+        $this->fixPostgresSequences();
+        Eloquent::reguard();
     }
 
     private function importUsers(ConnectionInterface $connection): void
@@ -57,10 +62,14 @@ class ImportFlarum extends Command
                 'name' => $row->username,
                 'email' => $row->email,
                 'email_verified_at' => $row->is_email_confirmed ? now() : null,
-                'bio' => $row->bio ?? null,
+                'locale' => $row->locale,
+                'bio' => $row->bio,
                 'avatar' => $row->avatar_url,
                 'created_at' => new DateTime($row->joined_at),
                 'last_seen_at' => new DateTime($row->last_seen_at),
+                'notifications_read_at' => $row->read_notifications_at
+                    ? new DateTime($row->read_notifications_at)
+                    : null,
                 'suspended_until' => $row->suspended_until
                     ? min((new DateTime($row->suspended_until))->getTimestamp(), 2147483647)
                     : null,
@@ -127,7 +136,10 @@ class ImportFlarum extends Command
     private function importDiscussionsAsPosts(ConnectionInterface $connection): void
     {
         $channelIds = Channel::query()->pluck('id');
-
+        $aggregate =
+            $connection->getDriverName() === 'pgsql'
+                ? "string_agg(cast(user_id as varchar), ',')"
+                : 'group_concat(user_id)';
         $discussions = $connection
             ->table('discussions')
             ->leftJoin('posts', 'posts.id', '=', 'first_post_id')
@@ -140,9 +152,9 @@ class ImportFlarum extends Command
                     ->whereIn('tag_id', $channelIds);
             }, 'tag_id')
             ->addSelect('posts.content')
-            ->selectSub(function ($query) {
+            ->selectSub(function ($query) use ($aggregate) {
                 $query
-                    ->selectRaw('group_concat(user_id)')
+                    ->selectRaw($aggregate)
                     ->from('post_likes')
                     ->whereColumn('post_id', 'first_post_id');
             }, 'liked_by')
@@ -173,23 +185,34 @@ class ImportFlarum extends Command
 
         $discussionUser = $connection
             ->table('discussion_user')
-            ->select('*')
+            ->join('discussions', 'discussions.id', '=', 'discussion_id')
+            ->whereNull('discussions.hidden_at')
+            ->where('discussions.is_private', false)
+            ->select('discussion_user.*')
             ->orderBy('discussion_id');
 
         $this->importFromDatabase('discussion user records', $discussionUser, function ($row) {
             PostUser::withoutEvents(
-                fn() => PostUser::create([
-                    'post_id' => $row->discussion_id,
-                    'user_id' => $row->user_id,
-                    'last_read_at' => new DateTime($row->last_read_at),
-                    'notifications' => $row->subscription,
-                ]),
+                fn() => PostUser::updateOrCreate(
+                    [
+                        'post_id' => $row->discussion_id,
+                        'user_id' => $row->user_id,
+                    ],
+                    [
+                        'last_read_at' => new DateTime($row->last_read_at),
+                        'notifications' => $row->subscription,
+                    ],
+                ),
             );
         });
     }
 
     private function importPostsAsComments(ConnectionInterface $connection): void
     {
+        $aggregate =
+            $connection->getDriverName() === 'pgsql'
+                ? "string_agg(cast(user_id as varchar), ',')"
+                : 'group_concat(user_id)';
         $posts = $connection
             ->table('posts')
             ->join('discussions', 'discussions.id', '=', 'discussion_id')
@@ -197,6 +220,8 @@ class ImportFlarum extends Command
             ->where('type', 'comment')
             ->whereNull('posts.hidden_at')
             ->where('posts.is_private', false)
+            ->whereNull('discussions.hidden_at')
+            ->where('discussions.is_private', false)
             ->select('posts.*')
             ->selectSub(function ($query) {
                 $query
@@ -214,9 +239,9 @@ class ImportFlarum extends Command
                     ->whereColumn('mentions_post_id', 'posts.id')
                     ->limit(1);
             }, 'reply_count')
-            ->selectSub(function ($query) {
+            ->selectSub(function ($query) use ($aggregate) {
                 $query
-                    ->selectRaw('group_concat(user_id)')
+                    ->selectRaw($aggregate)
                     ->from('post_likes')
                     ->whereColumn('post_id', 'posts.id');
             }, 'liked_by')
@@ -288,5 +313,23 @@ class ImportFlarum extends Command
     private function createMentions(Model $model): void
     {
         $model->mentions()->sync(FormatMentions::getMentionedUsers($model->parsed_body));
+    }
+    private function fixPostgresSequences(): void
+    {
+        if (DB::connection()->getDriverName() !== 'pgsql') {
+            return;
+        }
+        $tables = [User::class, Group::class, Channel::class, Post::class, Comment::class];
+        foreach ($tables as $modelClass) {
+            $model = new $modelClass();
+            $table = $model->getConnection()->getTablePrefix() . $model->getTable();
+            try {
+                DB::statement(
+                    "SELECT setval(pg_get_serial_sequence('\"$table\"', 'id'), (SELECT MAX(id) FROM \"$table\"))",
+                );
+            } catch (\Exception $e) {
+                // Ignore errors for empty tables
+            }
+        }
     }
 }
