@@ -6,7 +6,7 @@
     "require": {
         "ext-dom": "*",
         "s9e/text-formatter": "^2.11",
-        "waterhole/core": "*"
+        "waterhole/core": "^0.1|^0.2|^0.3|^0.4|^0.5|^0.6"
     },
     "autoload": {
         "psr-4": {
