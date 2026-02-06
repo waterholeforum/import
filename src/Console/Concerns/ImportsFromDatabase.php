@@ -36,7 +36,11 @@ trait ImportsFromDatabase
 
         $connection = $this->getConnection();
 
-        DB::statement('SET foreign_key_checks = 0');
+        try {
+            \Illuminate\Support\Facades\Schema::disableForeignKeyConstraints();
+        } catch (\Exception $e) {
+            $this->warn('Could not disable foreign keys: ' . $e->getMessage());
+        }
 
         $this->import($connection);
 
