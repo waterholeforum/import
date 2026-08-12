@@ -78,8 +78,8 @@ class ImportFlarum extends Command
                 'name' => $row->name_singular,
                 'color' => ltrim($row->color, '#') ?: null,
                 'is_public' =>
-                    !isset(static::GROUP_MAP[$row->id]) &&
-                    (!isset($row->is_hidden) || !$row->is_hidden),
+                    !isset(static::GROUP_MAP[$row->id])
+                        && (!isset($row->is_hidden) || !$row->is_hidden),
             ]);
         });
 
@@ -119,9 +119,12 @@ class ImportFlarum extends Command
             'name' => 'Likes',
             'is_default_posts' => true,
             'is_default_comments' => true,
-        ])
-            ->reactionTypes()
-            ->create(['name' => 'Like', 'icon' => 'emoji:👍', 'score' => 1, 'position' => 0]);
+        ])->reactionTypes()->create([
+            'name' => 'Like',
+            'icon' => 'emoji:👍',
+            'score' => 1,
+            'position' => 0,
+        ]);
     }
 
     private function importDiscussionsAsPosts(ConnectionInterface $connection): void
@@ -152,20 +155,18 @@ class ImportFlarum extends Command
 
         $this->importFromDatabase('posts', $discussions, function ($row) use ($channelIds) {
             /** @var Post $post */
-            $post = Post::withoutEvents(
-                fn() => Post::create([
-                    'id' => $row->id,
-                    'channel_id' => $row->tag_id ?: $channelIds[0],
-                    'user_id' => $row->user_id,
-                    'title' => $row->title,
-                    'slug' => $row->slug,
-                    'parsed_body' => $this->reformat($row->content ?: ''),
-                    'created_at' => $row->created_at,
-                    'last_activity_at' => $row->last_posted_at ?: $row->created_at,
-                    'comment_count' => max(0, $row->comment_count - 1),
-                    'is_locked' => $row->is_locked,
-                ]),
-            );
+            $post = Post::withoutEvents(fn() => Post::create([
+                'id' => $row->id,
+                'channel_id' => $row->tag_id ?: $channelIds[0],
+                'user_id' => $row->user_id,
+                'title' => $row->title,
+                'slug' => $row->slug,
+                'parsed_body' => $this->reformat($row->content ?: ''),
+                'created_at' => $row->created_at,
+                'last_activity_at' => $row->last_posted_at ?: $row->created_at,
+                'comment_count' => max(0, $row->comment_count - 1),
+                'is_locked' => $row->is_locked,
+            ]));
 
             $this->createReactions($post, array_filter(explode(',', $row->liked_by)));
             $this->createMentions($post);
@@ -177,14 +178,12 @@ class ImportFlarum extends Command
             ->orderBy('discussion_id');
 
         $this->importFromDatabase('discussion user records', $discussionUser, function ($row) {
-            PostUser::withoutEvents(
-                fn() => PostUser::create([
-                    'post_id' => $row->discussion_id,
-                    'user_id' => $row->user_id,
-                    'last_read_at' => new DateTime($row->last_read_at),
-                    'notifications' => $row->subscription,
-                ]),
-            );
+            PostUser::withoutEvents(fn() => PostUser::create([
+                'post_id' => $row->discussion_id,
+                'user_id' => $row->user_id,
+                'last_read_at' => new DateTime($row->last_read_at),
+                'notifications' => $row->subscription,
+            ]));
         });
     }
 
@@ -224,18 +223,16 @@ class ImportFlarum extends Command
 
         $this->importFromDatabase('comments', $posts, function ($row) {
             /** @var Comment $comment */
-            $comment = Comment::withoutEvents(
-                fn() => Comment::create([
-                    'id' => $row->id,
-                    'post_id' => $row->discussion_id,
-                    'parent_id' => $row->mentions_post_id,
-                    'user_id' => $row->user_id,
-                    'parsed_body' => $this->reformat($row->content ?: ''),
-                    'created_at' => new DateTime($row->created_at),
-                    'edited_at' => new DateTime($row->edited_at),
-                    'reply_count' => $row->reply_count ?: 0,
-                ]),
-            );
+            $comment = Comment::withoutEvents(fn() => Comment::create([
+                'id' => $row->id,
+                'post_id' => $row->discussion_id,
+                'parent_id' => $row->mentions_post_id,
+                'user_id' => $row->user_id,
+                'parsed_body' => $this->reformat($row->content ?: ''),
+                'created_at' => new DateTime($row->created_at),
+                'edited_at' => new DateTime($row->edited_at),
+                'reply_count' => $row->reply_count ?: 0,
+            ]));
 
             $this->createReactions($comment, array_filter(explode(',', $row->liked_by)));
             $this->createMentions($comment);
@@ -278,9 +275,10 @@ class ImportFlarum extends Command
         $model->reactions()->delete();
         $model
             ->reactions()
-            ->createMany(
-                array_map(fn($userId) => ['reaction_type_id' => 1, 'user_id' => $userId], $userIds),
-            );
+            ->createMany(array_map(fn($userId) => [
+                'reaction_type_id' => 1,
+                'user_id' => $userId,
+            ], $userIds));
 
         $model->recalculateScore()->save();
     }

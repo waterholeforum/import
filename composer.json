@@ -8,6 +8,9 @@
         "s9e/text-formatter": "^2.11",
         "waterhole/core": "^0.1|^0.2|^0.3|^0.4|^0.5|^0.6"
     },
+    "require-dev": {
+        "carthage-software/mago": "^1.43"
+    },
     "autoload": {
         "psr-4": {
             "Waterhole\\Import\\": "src/"
@@ -16,6 +19,10 @@
     "config": {
         "preferred-install": "dist",
         "sort-packages": true
+    },
+    "scripts": {
+        "check": "vendor/bin/mago fmt --check",
+        "fix": "vendor/bin/mago fmt"
     },
     "extra": {
         "branch-alias": {
