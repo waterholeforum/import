@@ -285,6 +285,19 @@ class ImportFlarum extends Command
 
     private function createMentions(Model $model): void
     {
-        $model->mentions()->sync(FormatMentions::getMentionedUsers($model->parsed_body));
+        if (method_exists(FormatMentions::class, 'getMentionedUsers')) {
+            $model->mentions()->sync(FormatMentions::getMentionedUsers($model->parsed_body));
+
+            return;
+        }
+
+        $model
+            ->mentions()
+            ->createMany(User::whereKey(
+                collect(FormatMentions::getMentions($model->parsed_body))->pluck('id'),
+            )->pluck('id')->map(fn($id) => [
+                'mentionable_type' => (new User())->getMorphClass(),
+                'mentionable_id' => $id,
+            ]));
     }
 }
